@@ -46,18 +46,21 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+TIM_HandleTypeDef htim9;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 uint32_t sensorValues[NUM_SENSORS];
-uint8_t packetBuffer[PACKET_SIZE];
+//uint8_t packetBuffer[PACKET_SIZE];
 //nt16_t pressureSensors[4];
 
-char IMU1array[IMU_DATA_SIZE];
-char IMU2array[IMU_DATA_SIZE];
-char IMU3array[IMU_DATA_SIZE];
+uint8_t  IMU1array[IMU_DATA_SIZE];
+uint8_t  IMU2array[IMU_DATA_SIZE];
+uint8_t  IMU3array[IMU_DATA_SIZE];
 
 char alpha[8] ={0};
 char beta[8] ={0};
@@ -67,7 +70,8 @@ double roll1, pitch1, yaw1;
 double roll2, pitch2, yaw2;
 double roll3, pitch3, yaw3;
 
-double alpha_value = 0.5;
+double alpha_value = 0.2;
+double prevSensorValues[4] = {0};
 
 double roll1_prev = 0, pitch1_prev = 0, yaw1_prev = 0;
 double roll2_prev = 0, pitch2_prev = 0, yaw2_prev = 0;
@@ -94,19 +98,68 @@ double prevGyroZ1 = 0, prevGyroZ2 = 0, prevGyroZ3 = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART6_UART_Init(void);
+static void MX_TIM9_Init(void);
+static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
+void Read_Pressure_Data(void);
 void Read_All_IMU_Data(void);
 int Get_IMU_Data(UART_HandleTypeDef* huart, char* IMUarray, double* roll, double* pitch, double* yaw, double* accelX, double* accelY, double* accelZ, double* gyroX, double* gyroY, double* gyroZ);
-void Parse_IMU_Data(char* IMUarray, double* roll, double* pitch, double* yaw, double* accelX, double* accelY, double* accelZ, double* gyroX, double* gyroY, double* gyroZ);
 double ApplyLowPassFilter(double currentValue, double *prevValue);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim == &htim9){
+		Read_Pressure_Data();
+
+		HAL_UART_Receive_DMA(&huart1, IMU1array, IMU_DATA_SIZE);
+		HAL_UART_Receive_DMA(&huart2, IMU2array, IMU_DATA_SIZE);
+		HAL_UART_Receive_DMA(&huart6, IMU3array, IMU_DATA_SIZE);
+
+		Read_All_IMU_Data();
+
+		//SendPacket();
+	}
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        // IMU1 데이터 수신 및 파싱
+    	roll1 = ApplyLowPassFilter(roll1, &roll1_prev);
+		pitch1 = ApplyLowPassFilter(pitch1, &pitch1_prev);
+		yaw1 = ApplyLowPassFilter(yaw1, &yaw1_prev);
+		HAL_UART_Receive_DMA(&huart1, IMU1array, IMU_DATA_SIZE);
+    }
+    /*else if (huart->Instance == USART2) {
+        // IMU2 데이터 수신 및 파싱
+        Get_IMU_Data(&huart2, IMU2array, &roll2, &pitch2, &yaw2, &accelX2, &accelY2, &accelZ2, &gyroX2, &gyroY2, &gyroZ2);
+        HAL_UART_Receive_DMA(&huart2, (uint8_t*)IMU2array, IMU_DATA_SIZE); // DMA 수신 재시작
+    }
+    else if (huart->Instance == USART6) {
+        // IMU3 데이터 수신 및 파싱
+        Get_IMU_Data(&huart6, IMU3array, &roll3, &pitch3, &yaw3, &accelX3, &accelY3, &accelZ3, &gyroX3, &gyroY3, &gyroZ3);
+        HAL_UART_Receive_DMA(&huart6, (uint8_t*)IMU3array, IMU_DATA_SIZE); // DMA 수신 재시작
+    }
+    */
+}
+
+
+
+/*void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        // 수신 완료 시 데이터 파싱
+        Parse_IMU_Data(IMU1array, &roll1, &pitch1, &yaw1, &accelX1, &accelY1, &accelZ1, &gyroX1, &gyroY1, &gyroZ1);
+        HAL_UART_Receive_DMA(&huart1, (uint8_t*)IMU1array, IMU_DATA_SIZE); // 재시작
+    }
+}
+*/
+
 
 /* USER CODE END 0 */
 
@@ -139,12 +192,21 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USART6_UART_Init();
   MX_USB_DEVICE_Init();
+  MX_TIM9_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start_IT(&htim9);
+  HAL_UART_Receive_DMA(&huart1, (uint8_t*)IMU1array, IMU_DATA_SIZE);
+  HAL_UART_Receive_DMA(&huart2, (uint8_t*)IMU2array, IMU_DATA_SIZE);
+  HAL_UART_Receive_DMA(&huart6, (uint8_t*)IMU3array, IMU_DATA_SIZE);
 
   /* USER CODE END 2 */
 
@@ -152,11 +214,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  Read_Pressure_Data();
 
-	  Read_All_IMU_Data();
-
-	  SendPacket();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -208,6 +266,35 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* TIM1_BRK_TIM9_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(TIM1_BRK_TIM9_IRQn);
+  /* USART1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+  /* USART2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART2_IRQn);
+  /* USART6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(USART6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART6_IRQn);
+  /* ADC_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(ADC_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(ADC_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+  /* OTG_FS_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
 }
 
 /**
@@ -264,6 +351,44 @@ static void MX_ADC1_Init(void)
 	  HAL_ADC_ConfigChannel(&hadc1, &sConfig);
   }
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM9 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM9_Init(void)
+{
+
+  /* USER CODE BEGIN TIM9_Init 0 */
+
+  /* USER CODE END TIM9_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+
+  /* USER CODE BEGIN TIM9_Init 1 */
+
+  /* USER CODE END TIM9_Init 1 */
+  htim9.Instance = TIM9;
+  htim9.Init.Prescaler = 839;
+  htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim9.Init.Period = 100-1;
+  htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim9, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM9_Init 2 */
+
+  /* USER CODE END TIM9_Init 2 */
 
 }
 
@@ -367,6 +492,17 @@ static void MX_USART6_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -385,85 +521,102 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void Read_Pressure_Data(void){
-	for (int i = 0; i < NUM_SENSORS; i++){
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-		sensorValues[i] = HAL_ADC_GetValue(&hadc1);
-		HAL_ADC_Stop(&hadc1);
-	}
-}
+void Read_Pressure_Data(void) {
+    ADC_ChannelConfTypeDef sConfig = {0};
 
-void Parse_IMU_Data(char* IMUarray, double* roll, double* pitch, double* yaw, double* accelX, double* accelY, double* accelZ, double* gyroX, double* gyroY, double* gyroZ) {
-    int cnt0 = 0, cnt1 = 0, cnt2 = 0, cnt3 = 0, cnt4 = 0, cnt5 = 0, cnt6 = 0;
-    char* pos;
-
-    for (int i = 1; i < IMU_DATA_SIZE; i++) {
-        if (IMUarray[i] == ',') {
-            if (cnt0 == 0) cnt1 = i + 1;
-            else if (cnt0 == 1) cnt2 = i + 1;
-            else if (cnt0 == 2) cnt3 = i + 1;
-            else if (cnt0 == 3) cnt4 = i + 1;
-            else if (cnt0 == 4) cnt5 = i + 1;
-            cnt0++;
-        } else {
-            switch (cnt0) {
-                case 0: alpha[i - 1] = IMUarray[i]; break;  // Roll
-                case 1: beta[i - cnt1] = IMUarray[i]; break;  // Pitch
-                case 2: gamm[i - cnt2] = IMUarray[i]; break;  // Yaw
-                case 3: accelX[i - cnt3] = IMUarray[i]; break;  // Accel X
-                case 4: accelY[i - cnt4] = IMUarray[i]; break;  // Accel Y
-                case 5: accelZ[i - cnt5] = IMUarray[i]; break;  // Accel Z
-                case 6: gyroX[i - cnt6] = IMUarray[i]; break;  // Gyro X
-            }
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        // ADC 채널을 각 센서 핀에 맞게 설정 (IN0, IN1, IN4, IN5)
+        switch(i) {
+            case 0: sConfig.Channel = ADC_CHANNEL_0; break; // IN0
+            case 1: sConfig.Channel = ADC_CHANNEL_1; break; // IN1
+            case 2: sConfig.Channel = ADC_CHANNEL_4; break; // IN4
+            case 3: sConfig.Channel = ADC_CHANNEL_5; break; // IN5
         }
-        if (IMUarray[i] == '\r') {
-            cnt6 = i + 1;
-            break;
+
+        sConfig.Rank = 1;
+        sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+        if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
+            Error_Handler();
+        }
+
+        if (HAL_ADC_Start(&hadc1) == HAL_OK) {
+            if (HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY) == HAL_OK) {
+            	double rawValue = HAL_ADC_GetValue(&hadc1);
+            	sensorValues[i] = ApplyLowPassFilter(rawValue, &prevSensorValues[i]);
+            } else if (i == 0){
+            	sensorValues[0] -= 2000;
+            } else {
+                Error_Handler();
+            }
+            HAL_ADC_Stop(&hadc1);
+        } else {
+            Error_Handler();
         }
     }
-
-    // 문자열이 짧은 경우 0으로 채움
-    for (int j = cnt1 - 2; j < 7; j++) alpha[j] = '0';
-    for (int k = cnt2 - (cnt1); k < 8; k++) beta[k - 1] = '0';
-    for (int l = cnt3 - (cnt2); l < 8; l++) gamm[l - 1] = '0';
-    for (int m = cnt4 - (cnt3); m < 8; m++) accelX[m - 1] = '0';
-    for (int n = cnt5 - (cnt4); n < 8; n++) accelY[n - 1] = '0';
-    for (int o = cnt6 - (cnt5); o < 8; o++) accelZ[o - 1] = '0';
-
-    // 문자열을 double로 변환
-    *roll = strtod(alpha, &pos);
-    *pitch = strtod(beta, &pos);
-    *yaw = strtod(gamm, &pos);
-    *accelX = strtod(accelX, &pos);
-    *accelY = strtod(accelY, &pos);
-    *accelZ = strtod(accelZ, &pos);
-    *gyroX = strtod(gyroX, &pos);
-    *gyroY = strtod(gyroY, &pos);
-    *gyroZ = strtod(gyroZ, &pos);
 }
+
+
+
 
 int Get_IMU_Data(UART_HandleTypeDef* huart, char* IMUarray, double* roll, double* pitch, double* yaw, double* accelX, double* accelY, double* accelZ, double* gyroX, double* gyroY, double* gyroZ) {
     unsigned char star = '*';
     unsigned char receivedChar;
-    int isStarReceived = 0;
+    int cnt0 = 0, cnt1 = 0, cnt2 = 0, cnt3 = 0, cnt4 = 0, cnt5 = 0, cnt6 = 0;
+    char* pos;
+
 
     // UART에서 한 글자씩 받아서 '*'인지 확인
     while (1) {
-        HAL_UART_Receive(huart, &receivedChar, 1, HAL_MAX_DELAY);  // 1 바이트씩 수신
-        if (receivedChar == star) {
-            isStarReceived = 1;  // '*' 문자를 받았다는 플래그 설정
-            break;
-        }
-    }
+    	HAL_UART_Receive(huart, &receivedChar, 1, HAL_MAX_DELAY);
+		if (receivedChar == star) {
+			// '*' 문자를 받으면 IMU 데이터 수신 시작
+			HAL_UART_Receive_DMA(huart, (uint8_t*)IMUarray, IMU_DATA_SIZE);
+			break;
+		}
+	}
 
-    // '*' 문자를 받았을 때만 데이터를 받아옴
-    if (isStarReceived) {
-        HAL_UART_Receive_DMA(huart, IMUarray, IMU_DATA_SIZE);  // 31 바이트 IMU 데이터 수신
-        Parse_IMU_Data(IMUarray, roll, pitch, yaw, accelX, accelY, accelZ, gyroX, gyroY, gyroZ);  // 수신된 데이터를 파싱
-        return 1;  // 성공적으로 데이터를 받았음을 반환
-    }
-    return 0;  // 실패 시 0 반환
+    for (int i = 1; i < IMU_DATA_SIZE; i++) {
+		if (IMUarray[i] == ',') {
+			if (cnt0 == 0) cnt1 = i + 1;
+			else if (cnt0 == 1) cnt2 = i + 1;
+			else if (cnt0 == 2) cnt3 = i + 1;
+			else if (cnt0 == 3) cnt4 = i + 1;
+			else if (cnt0 == 4) cnt5 = i + 1;
+			cnt0++;
+		} else {
+			switch (cnt0) {
+				case 0: alpha[i - 1] = IMUarray[i]; break;  // Roll
+				case 1: beta[i - cnt1] = IMUarray[i]; break;  // Pitch
+				case 2: gamm[i - cnt2] = IMUarray[i]; break;  // Yaw
+				case 3: accelX[i - cnt3] = IMUarray[i]; break;  // Accel X
+				case 4: accelY[i - cnt4] = IMUarray[i]; break;  // Accel Y
+				case 5: accelZ[i - cnt5] = IMUarray[i]; break;  // Accel Z
+				case 6: gyroX[i - cnt6] = IMUarray[i]; break;  // Gyro X
+			}
+		}
+		if (IMUarray[i] == '\r') {
+			cnt6 = i + 1;
+			break;
+		}
+	}
+    // 문자열이 짧은 경우 0으로 채움
+       for (int j = cnt1 - 2; j < 7; j++) alpha[j] = '0';
+       for (int k = cnt2 - (cnt1); k < 8; k++) beta[k - 1] = '0';
+       for (int l = cnt3 - (cnt2); l < 8; l++) gamm[l - 1] = '0';
+       for (int m = cnt4 - (cnt3); m < 8; m++) accelX[m - 1] = '0';
+       for (int n = cnt5 - (cnt4); n < 8; n++) accelY[n - 1] = '0';
+       for (int o = cnt6 - (cnt5); o < 8; o++) accelZ[o - 1] = '0';
+
+       // 문자열을 double로 변환
+       *roll = strtod(alpha, &pos);
+       *pitch = strtod(beta, &pos);
+       *yaw = strtod(gamm, &pos);
+       *accelX = strtod(accelX, &pos);
+       *accelY = strtod(accelY, &pos);
+       *accelZ = strtod(accelZ, &pos);
+       *gyroX = strtod(gyroX, &pos);
+       *gyroY = strtod(gyroY, &pos);
+       *gyroZ = strtod(gyroZ, &pos);
 }
 
 void Read_All_IMU_Data(void) {
@@ -481,7 +634,7 @@ void Read_All_IMU_Data(void) {
         gyroY1 = ApplyLowPassFilter(gyroY1, &prevGyroY1);  // 각속도 Y 축 필터 적용
         gyroZ1 = ApplyLowPassFilter(gyroZ1, &prevGyroZ1);  // 각속도 Z 축 필터 적용
     }
-
+/*
     // IMU 2 (UART2)
     if (Get_IMU_Data(&huart2, IMU2array, &roll2, &pitch2, &yaw2, &accelX2, &accelY2, &accelZ2, &gyroX2, &gyroY2, &gyroZ2)) {
         roll2 = ApplyLowPassFilter(roll2, &roll2_prev);
@@ -511,14 +664,16 @@ void Read_All_IMU_Data(void) {
         gyroY3 = ApplyLowPassFilter(gyroY3, &prevGyroY3);
         gyroZ3 = ApplyLowPassFilter(gyroZ3, &prevGyroZ3);
     }
+    */
 }
 double ApplyLowPassFilter(double currentValue, double *prevValue){
 	*prevValue = alpha_value * currentValue + (1.0 - alpha_value) * (*prevValue);
 	return *prevValue;
 }
 
+
 // 패킷 빌드 함수
-void BuildPacket(void) {
+/*void BuildPacket(void) {
     memset(packetBuffer, 0, PACKET_SIZE);
 
     // 패킷 시작 신호 (예: 0xA0, 0xA1로 시작)
@@ -664,7 +819,7 @@ void SendPacket(void){
 	packetIndex += sizeof(yaw3);
 	memcpy(&packet[packetIndex], &accelX3, sizeof(accelX3));
 	packetIndex += sizeof(accelX3);
-	memcpy(&packet[packetIndex], &accelY3, sizeof(accelY3));
+	memcpy(&packet[packetIndex], &accelY3, sizeof(accelY3));https://www.ti.com/tool/TMDSEMU200-U#order-start-development
 	packetIndex += sizeof(accelY3);
 	memcpy(&packet[packetIndex], &accelZ3, sizeof(accelZ3));
 	packetIndex += sizeof(accelZ3);
@@ -678,6 +833,7 @@ void SendPacket(void){
     // Step 3: 패킷을 UART를 통해 전송
 	CDC_Transmit_HS((uint8_t*)packet, packetIndex);
 }
+*/
 /* USER CODE END 4 */
 
 /**
